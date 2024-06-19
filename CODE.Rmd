@@ -1,0 +1,944 @@
+---
+title: "THRESHOLD DETERMINATION"
+author: "Gorka Campandegui García"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+Libraries to be used:
+
+```{r, message = FALSE, warning=FALSE}
+library(ggplot2)
+library(POT)
+library(evd)
+library(splines)
+library(pander)
+library(tea)
+library(dplyr)
+library(multcomp)
+```
+
+\tableofcontents
+
+\newpage
+
+# INTRODUCTION
+
+```{r}
+g_xi_positive <- function(y, sigma, xi) (1/sigma) * (1 + xi*y/sigma) ^ (- 1 - 1/xi)
+g_xi_zero <- function(y, sigma) (1/sigma) * exp(-y/sigma)
+g_xi_negative <- function(y, sigma, xi) {
+  ((1/sigma) * (1 + xi*y/sigma) ^ (- 1 - 1/xi)) * (y< -sigma/xi)}
+y <- seq(0, 5, 0.05)
+sigma <- 1
+xi1 <- 0.25
+xi2 <- -0.25
+data1 <- data.frame(y, g_xi_positive(y, sigma, xi1), g_xi_negative(y, sigma, xi2),
+                    g_xi_zero(y, sigma))
+colnames(data1) <- c("y", "g_pos", "g_neg", "g_zero")
+ggplot2::ggplot(data = data1, aes(x = y, y = g_pos)) + theme_minimal() +
+  geom_line(aes(color = "deepskyblue"), show.legend = TRUE) +
+  geom_line(aes(x = y, y = g_neg, color = "deeppink"), show.legend = TRUE) +
+  geom_line(aes(x = y, y = g_zero, color = "chartreuse3"), show.legend = TRUE) +
+  ggtitle("Generalized Pareto density function") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("y") +
+  ylab("g(y)") +
+  scale_color_manual(name = "Cases",
+                     values = c("deepskyblue", "deeppink", "chartreuse3"),
+                     labels = c("Pareto type", "Upper endpoint type", "Exponential type"))
+```
+
+\newpage
+
+# METHODS FOR THRESHOLD SELECTION
+
+## Mean Residual Life Plot
+
+```{r, warning=FALSE, comment=""}
+# FUNCTION FOR PLOTTING THE MRLP
+
+mrlp <- function(data, u_min=0.1, n0=10){
+  
+  # Transformation of the data
+  d <- as.matrix(data)
+  
+  # Compute the independent peaks over threshold
+  pot <- evd::clusters(data = d, u = u_min, cmax = TRUE)
+  pot <- sort(pot)
+  
+  # Mean excess and quasi-standard deviation computation
+  n <- length(pot)
+  e <- c()
+  s <- c()
+  for (i in 1:(n-n0)){
+    excesses <- pot[ pot >= pot[i]] - pot[i]
+    e[i] <- mean(excesses)
+    }
+  u <- pot[1:(n-n0)]
+  
+  # Plotting
+  df <- data.frame(u, e)
+  ggplot2::ggplot(data = df, aes(x = u, y = e)) + geom_line(color='grey') +
+    geom_point(color = "blue2", size = 0.6) + theme_minimal() +
+    labs(x = "Threshold", y = "Mean of the excesses",
+       title = "Mean Residual Life Plot") +
+    theme(plot.title = element_text(hjust = 0.5))
+}
+```
+
+\newpage
+
+## WMSE criteria by Langousis
+
+```{r}
+wmse_langousis <- function(data, u_min, n0=10, log_scale=FALSE, plot=FALSE){
+  
+  # Transformation of the data
+  d <- as.matrix(data)  
+  
+  # Peaks over threshold selection
+  pot <- evd::clusters(data = d, u = u_min, cmax = TRUE)
+  pot <- sort(pot)
+  
+  # Mean excess, quasi-standard deviation and weights computation
+  n <- length(pot)
+  e <- c()
+  s <- c()
+  
+  for (i in 1:(n-n0)){
+    excesses <- pot[ pot >= pot[i]] - pot[i]
+    e[i] <- mean(excesses)
+    s[i] <- sd(excesses)
+    }
+  
+  u <- pot[1:(n-n0)]
+  j <- seq(1,n-n0,1)
+  w <- (n-j)/(s^2)
+  
+  # WMSE
+  wmse <- c()
+  for (i in 1:(n-2*n0)){
+    ee <- e[i:(n-2*n0)]
+    uu <- u[i:(n-2*n0)]
+    ww <- w[i:(n-2*n0)]
+    model <- lm(ee ~ uu, weights = ww)
+    residuals <- resid(model)
+    wmse_i <- mean(ww*residuals^2)
+    wmse[i] <- wmse_i
+  }
+  
+  # Threshold
+  i <- 1
+  while(wmse[i+1]<wmse[i]){
+    i <- i+1
+  }
+  threshold <- u[i]
+
+  # Plotting
+  if(plot==TRUE){  
+    
+  u2n0 <- u[1:(n-2*n0)]
+  df <- data.frame(u2n0, wmse)
+  
+  if(log_scale == TRUE){
+    # Plot in logarithmic scale
+    pl <- ggplot2::ggplot(data = df, aes(x = u2n0, y = wmse)) + geom_line(color='grey') +
+      scale_y_continuous(trans='log10') +
+      geom_point(color = "blue2", size = 0.6) + theme_minimal() +
+      geom_vline(xintercept = threshold, color="red")+
+      labs(x = "Threshold", y = "log(WMSE)",
+       title = "Threshold selection based on WMSE criteria by Langousis (2016)") +
+      theme(plot.title = element_text(hjust = 0.5))
+  }else{
+    # Plot in original scale
+    pl <- ggplot2::ggplot(data = df, aes(x = u2n0, y = wmse)) + geom_line(color='grey') +
+      geom_point(color = "blue2", size = 0.6) + theme_minimal() +
+      geom_vline(xintercept = threshold, color="red")+
+      labs(x = "Threshold", y = "WMSE",
+       title = "Threshold selection based on WMSE criteria by Langousis (2016)") +
+      theme(plot.title = element_text(hjust = 0.5))
+  }
+    result <- list(plot=pl, threshold=as.numeric(threshold))
+  }else{
+    result <- list(threshold=as.numeric(threshold))
+  }
+  
+  return(result)
+  
+  }
+```
+
+\newpage
+
+## Goodness of Fit methods
+
+### Cramer-Von Mises
+
+```{r}
+threshold_CVM <- function(data, alpha=0.05){
+  
+    # Reduce the data to the upper 90%
+  data <- data[data>quantile(data,0.9)]
+  
+  # Sort and convert data to matrix
+  data <- as.matrix(sort(data))
+  
+  # Set the initial values
+  p_value <- 0
+  i <- 1
+  
+  # While a GPD is rejected, do the following
+  while(p_value < alpha){
+    
+    # Define the current threshold
+    u <- data[i]
+    
+    # Compute the excesses
+    excesses <- data[data>u]
+    
+    # Stop if there are less than 10 excesses
+    if (length(excesses) < 10) {
+      break
+      }
+    
+    # Fitting of the GPD
+    parameters <- tea::gpdFit(excesses, threshold=u)$par.ests
+    scale <- as.numeric(parameters[1])
+    shape <- as.numeric(parameters[2])
+    
+    # Cramer - Von Mises test
+    PGPD <- function(q){tea::pgpd(scale=scale, shape=shape, loc=u, q=q)}
+    n <- length(excesses)
+    k <- 1:n
+    prob <- PGPD(excesses)
+    prob <- prob[prob<1]
+    qnor <- qnorm(sort(prob))
+    pnor <- pnorm((qnor-mean(qnor))/sd(qnor))
+    w <- round((sum((pnor-(2*k-1)/(2*n))^2)+1/(12*n))*(1+0.5/n),4)
+    if (w<0.0275){
+      p_value <- 1-exp(-13.953+775.5*w-12542.61*w^2)
+    }
+    if (0.0275 <= w & w < 0.051){
+      p_value <- 1-exp(-5.903+179.546*w-1515.29*w^2)
+    }
+    if (0.051 <= w & w < 0.092){
+      p_value <- exp(0.886 - 31.62 * w + 10.897 * w^2)
+    }
+    if (0.092 <= w & w < 1.1){
+      p_value <- exp(1.111 - 34.242 * w + 12.832 * w^2)
+    }
+    if (w >=1.1){
+      p_value <- 7.37 * 10^(-10)
+    }
+
+    # Go to next value
+    i <- i+1
+  }
+  return(threshold=u)
+}
+
+```    
+    
+\newpage
+    
+### Anderson - Darling
+
+```{r}
+threshold_AD <- function(data, alpha){
+  
+  # Reduce the data to the upper 90%
+  data <- data[data>quantile(data,0.9)]
+  
+  # Sort and convert data to matrix
+  data <- as.matrix(sort(data))
+  
+  # Set the initial values
+  p_value <- 0
+  i <- 1
+  
+  # While a GPD is rejected, do the following
+  while(p_value < alpha){
+    
+    # Define the current threshold
+    u <- data[i]
+    
+    # Compute the excesses
+    excesses <- data[data>u]
+    
+    # Stop if there are less than 10 excesses
+    if (length(excesses) < 10) {
+      break
+      }
+    
+    # Fitting of the GPD
+    parameters <- tea::gpdFit(excesses, threshold=u)$par.ests
+    scale <- as.numeric(parameters[1])
+    shape <- as.numeric(parameters[2])
+    
+    # Anderson - Darling test
+    PGPD <- function(q){tea::pgpd(scale=scale, shape=shape, loc=u, q=q)}
+    n <- length(excesses)
+    k <- 1:n
+    prob <- PGPD(excesses)
+    prob <- prob[prob<1]
+    qnor <- qnorm(sort(prob))
+    pnor <- pnorm((qnor-mean(qnor))/sd(qnor))
+    A <- (-n-sum((2*k-1)*log(pnor)+(2*n+1-2*k)*log(1-pnor))/n)*(1+0.75/n+2.25/n^2)
+    A <- round((1 + 0.75/n + 2.25/n^2) * A,4)
+    if (A < 0.2){
+      p_value <- 1 - exp(-13.436+101.14*A-223.73*A^2)
+    }
+    if (0.2 <= A & A < 0.34){
+      p_value <- 1 - exp(-8.318 + 42.796 * A - 59.938 * A^2);
+    }
+    if (A <= 0.34 & A < 0.6){
+      p_value <- exp(0.9177 - 4.279 * A - 1.38 * A^2)
+    }
+    if (A <= 0.6 & A < 10){
+      p_value <- exp(1.2937 - 5.709 * A + 0.0186 * A^2)
+    }
+    if (A >= 10){
+      p_value <- 7.37*10^(-10)
+    }
+  
+    # Go to next value
+    i <- i+1
+  }
+  return(threshold=u)
+}
+```
+
+\newpage
+
+## Threshold selection based on studentized residuals
+
+```{r}
+threshold <- function(data, u_min, n0=10, plot=FALSE, deg=25, alpha=0.05){
+
+  # Transformation of the data
+  d <- as.matrix(data)
+  
+  # Peaks over threshold selection
+  pot <- evd::clusters(data = d, u = u_min, cmax = TRUE)
+  pot <- sort(pot)
+  
+  # Loop that repeats until condition is satisfied
+  condition <- FALSE
+  
+  # We define some auxiliary variables so that the plot is made with the result of the
+  # previous iteration
+  u <- 0
+  u0 <- 0
+  zeros_indices <- 0
+  studentized_residuals <- 0
+  predicted_sr <- 0
+  sr0 <- 0
+  while (condition==FALSE){
+    threshold <- u_min
+    u_ <- u
+    u0_ <- u0
+    zeros_indices_ <- zeros_indices
+    studentized_residuals_ <- studentized_residuals
+    predicted_sr_ <- predicted_sr
+    sr0_ <- sr0
+    pot <- pot[pot>=u_min]
+  
+  # Mean excess and quasi-standard deviation computation
+  n <- length(pot)
+  e <- c()
+  s <- c()
+  for (i in 1:(n-n0)){
+    excesses <- pot[pot >= pot[i]] - pot[i]
+    e[i] <- mean(excesses)
+    s[i] <- sd(excesses)
+    }
+  u <- pot[1:(n-n0)]
+  j <- seq(1,n-n0,1)
+  w <- (n-j)/(s^2)
+  
+  # Define the linear model and compute internally studentized residuals
+  model <- lm(e ~ u, weights = w)
+  studentized_residuals <- rstandard(model)
+  
+  # Compute the objective function to see whether there is bad data
+  res <- resid(model)
+  obj <- sum(w*res^2)
+  condition <- obj < qchisq(1-alpha, n-n0-2)
+  
+  # Fit a spline
+  spline <- lm(studentized_residuals ~ bs(u, degree = deg))
+  predicted_sr <- predict(spline)
+  
+  # Indices of the zeros of the spline
+  zeros_indices <- c()
+   for (i in 1:(length(u)-1)){
+     if (sign(predicted_sr[i+1]) != sign(predicted_sr[i])){
+       zeros_indices <- c(zeros_indices, i)
+      }
+    }
+  
+  # Give the threshold
+  ind1 <- zeros_indices[1]
+  ind2 <- zeros_indices[2]
+  threshold_index <- which(abs(studentized_residuals[ind1:ind2]) == max(abs(studentized_residuals[ind1:ind2]))) + ind1
+  u_min <- as.numeric(u[threshold_index])
+  
+  # The while loop finishes here
+}
+  
+  # Plot
+  if(plot == TRUE){
+    # Plot 1: how the threshold has been determined
+    u0_ <- u_[zeros_indices_]
+    sr0_ <- predicted_sr_[zeros_indices_]
+    df0 <- data.frame(u_, studentized_residuals_, predicted_sr_)
+    df1 <- data.frame(u0_, sr0_)
+    pl1 <- ggplot2::ggplot(data = df0, aes(x = u_, y = studentized_residuals_)) +
+      theme_minimal() +
+      geom_point(color = "blue2", size = 0.6) +
+      geom_line(data = df0, aes(x=u_, y=predicted_sr_, group=1), color = "red") +
+      geom_vline(data = df1, aes(xintercept = u0_),
+             linetype = "dashed", color = "black", alpha = 0.5) +
+      geom_vline(data = df1, aes(xintercept = threshold),
+             linetype = "solid", color = "lightgreen") +
+      labs(x="Threshold", y="Internally studentized residuals")
+    
+    # Plot 2: studentized residuals of the regression of the excesses
+    u0 <- u[zeros_indices]
+    sr0 <- predicted_sr[zeros_indices]
+    df0 <- data.frame(u, studentized_residuals, predicted_sr)
+    df1 <- data.frame(u0, sr0)
+    pl2 <- ggplot2::ggplot(data = df0, aes(x = u, y = studentized_residuals)) +
+      geom_point(color = "blue2", size = 0.6) + theme_minimal() +
+      geom_vline(data = df1, aes(xintercept = threshold),
+                 linetype = "solid", color = "lightgreen") +
+      labs(x="Threshold", y="Internally studentized residuals")
+    
+    if(u_[1]==0){
+      result <- list(plot = pl2, threshold = threshold)
+    }else{
+    result <- list(plot1 = pl1, plot2 = pl2, threshold = threshold)
+    }
+  }else{
+      result <- list(threshold=threshold)
+  }
+  return(result)
+  }
+```
+
+
+\newpage
+
+# APPLICATION OF THE METHODS
+
+## NOAA data
+
+Loading the data and brief descriptive analysis:
+
+```{r, comment=""}
+# We load the data
+data <- read.csv("PRCP_ASN00021043.csv", sep=",")
+
+# Dimensions of the dataset
+dim(data)
+
+# We display the number of missing values
+sum(is.na(data))
+
+# We assign 0 to NAs
+data[is.na(data)] <- 0
+
+# We check that there is no missing data now
+sum(is.na(data))
+
+# We divide the data by 10
+data["PRCP"] <- data["PRCP"]/10
+
+# Number of 0s
+sum(data['PRCP']==0)
+
+# Proportion of 0s
+sum(data['PRCP']==0)/46132
+```
+
+Plot the data:
+
+```{r, fig.height=3, warning=FALSE}
+# We plot the data
+ggplot2::ggplot(data=data, aes(x=DATE, y=PRCP)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  geom_segment(aes(x = DATE, xend = DATE, y = 0, yend = PRCP), color = "gray", size = 0.5) +
+  geom_point(color = "blue2", size = 0.6)
+
+# Zoom in year 2000
+data0 <- data[41506:41871,]
+ggplot2::ggplot(data=data0, aes(x=DATE, y=PRCP)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  geom_segment(aes(x = DATE, xend = DATE, y = 0, yend = PRCP), color = "gray", size = 0.5) +
+  geom_point(color = "blue2", size = 0.6)
+```
+
+Compute the threshold:
+
+```{r}
+# Threshold selection techniques
+mrlp(data[,'PRCP'])
+wmse_langousis(data[,'PRCP'], u_min=0.1, plot=TRUE)
+threshold(data[,'PRCP'], plot=TRUE, u_min=0.1)
+threshold_AD(data=data[,'PRCP'], alpha=0.005)
+threshold_CVM(data=data[,'PRCP'], alpha=0.005)
+```
+
+\newpage
+
+## Simulated data
+
+```{r}
+# Set the seed
+set.seed(4545454)
+
+# Establish the parameters
+mu <- 0
+sigma_2 <- 4
+beta <- 0.975
+sigma <- 1
+xi <- 0.15
+n <- 10^4
+u <- qnorm(beta, mean=mu, sd=sqrt(sigma_2))
+
+# Generate the data
+s <- rnorm(n, mean=mu, sd=sqrt(sigma_2))
+for (i in 1:length(s)){
+  if (s[i]>u){
+    s[i] <- rgpd(1, loc = u, scale = sigma, shape = xi)
+  }
+  if (s[i]<0){
+    s[i] <- 0
+  }
+}
+
+# Show the theshold
+print(paste("Threshold=",u))
+
+# Plot the generated data
+data2 <- data.frame(1:n,s)
+colnames(data2) <- c("Time", "Value")
+ggplot2::ggplot(data=data2, aes(x=Time, y=Value)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  geom_segment(aes(x = Time, xend = Time, y = 0, yend = Value), color = "gray", linewidth = 0.5) +
+  geom_point(color = "blue2", size = 0.6) + theme_minimal() +
+  geom_hline(data = data2, aes(yintercept = u),
+                 linetype = "solid", color = "red")
+
+# Plot the density
+ggplot2::ggplot(data=data2, aes(x=Value)) +
+  geom_density(color = "blue2", fill="blue2", alpha=0.2) + theme_minimal() +
+  geom_vline(data = data2, aes(xintercept = u), color = "red") +
+  annotate("text", x = u+0.8, y = 1, label = paste("Threshold=",u),
+           color = "red", size = 4) + labs(y="Density")
+  
+```
+
+Find the threshold with several methods:
+
+```{r}
+# Threshold selection techniques
+mrlp(s)
+wmse_langousis(s, u_min=0.1, plot=TRUE)
+threshold(s, plot=TRUE, alpha=0.05, u_min=0.1)
+threshold_AD(data=s, alpha=0.05)
+threshold_CVM(data=s, alpha=0.05)
+```
+
+\newpage
+
+## Data from Igeldo
+
+```{r}
+# Load the data
+igeldo <- read.csv("igeldoHour.csv")
+igeldo.prec <- as.vector(igeldo$Prec[!is.na(igeldo$Prec)])
+
+# Threshold selection techniques
+mrlp(igeldo.prec)
+wmse_langousis(igeldo.prec, u_min=0.1, plot=TRUE)
+threshold(igeldo.prec, alpha=0.05, u_min=0.1, plot=TRUE)
+# threshold_AD(data=igeldo.prec, alpha=0.05)
+# threshold_CVM(data=igeldo.prec, alpha=0.05)
+```
+
+
+\newpage
+
+# ANALYSIS AND COMPARISONS OF THE METHODS
+
+## Simulation of data, threshold computation & storing the information
+
+```{r, warning=FALSE, eval=FALSE}
+# Establish the parameters
+mu <- 0
+sigma_2 <- 1
+
+# Establish the parameter grid
+betagrid <- c(0.95,0.98,0.99,0.995)
+sigmagrid <- c(0.1,0.5,5,10)
+xigrid <- c(-0.15,0,0.15)
+ngrid <- c(2000,10^4)
+alphagrid <- c(0.1,0.05,0.005,0.001)
+
+# Number of experiments
+N <- 4*4*3*2*4*4
+
+# Create a dataframe
+anova.df <- data.frame(
+  "difference" = rep(0,N),
+  "method" = rep("",N),
+  "beta" = rep(0,N),
+  "sigma" = rep(0,N),
+  "xi" = rep(0,N),
+  "n" = rep(0,N),
+  "alpha" = rep(0,N),
+  "time" = rep(0,N),
+  "hatsigma" = rep(0,N),
+  "hatxi" = rep(0,N)
+)
+
+# Generate the data and compute the threshold
+i <- 1
+for (beta in betagrid){
+  for (sigma in sigmagrid){
+    for (xi in xigrid){
+      for (n in ngrid){
+        for (alpha in alphagrid){
+          
+          # Set the threshold
+          u <- qnorm(beta, mean=mu, sd=sqrt(sigma_2))
+
+          # Simulate the data
+          s <- rnorm(n, mean=mu, sd=sqrt(sigma_2))
+          for (k in 1:length(s)){
+            if (s[k]>u){
+              s[k] <- rgpd(1, loc = u, scale = sigma, shape = xi)
+            }
+            if (s[k]<0){
+              s[k] <- 0
+            }
+          }
+          
+          # Compute the threshold
+          
+          t0 <- Sys.time()
+          tL <- wmse_langousis(s, u_min = 0.1)$threshold
+          t1 <- Sys.time()
+          dif <- as.numeric(t1-t0)
+          parameters <- tea::gpdFit(s[s>tL], threshold=tL)$par.ests
+          hatscale <- as.numeric(parameters[1])
+          hatshape <- as.numeric(parameters[2])
+          anova.df[i,] <- c(tL-u,"Langousis",beta,sigma,xi,n,alpha,dif,hatscale,hatshape)
+          print(paste(i, " of ", N, "  (Langousis)"))
+          
+          t0 <- Sys.time()
+          tR <- threshold(s, alpha=alpha, u_min=0.1)$threshold
+          t1 <- Sys.time()
+          dif <- as.numeric(t1-t0)
+          parameters <- tea::gpdFit(s[s>tR], threshold=tR)$par.ests
+          hatscale <- as.numeric(parameters[1])
+          hatshape <- as.numeric(parameters[2])
+          anova.df[i+1,] <- c(tR-u,"Residuals",beta,sigma,xi,n,alpha,dif,hatscale,hatshape)
+          print(paste(i+1, " of ", N, "  (Residuals)"))
+          
+          t0 <- Sys.time()
+          tAD <- threshold_AD(s, alpha=alpha)
+          t1 <- Sys.time()
+          dif <- as.numeric(t1-t0)
+          parameters <- tea::gpdFit(s[s>tAD], threshold=tAD)$par.ests
+          hatscale <- as.numeric(parameters[1])
+          hatshape <- as.numeric(parameters[2])
+          anova.df[i+2,] <- c(tAD-u,"AD",beta,sigma,xi,n,alpha,dif,hatscale,hatshape)
+          print(paste(i+2, " of ", N, "  (AD)"))
+          
+          t0 <- Sys.time()
+          tCVM <- threshold_CVM(s, alpha=alpha)
+          t1 <- Sys.time()
+          dif <- as.numeric(t1-t0)
+          parameters <- tea::gpdFit(s[s>tCVM], threshold=tCVM)$par.ests
+          hatscale <- as.numeric(parameters[1])
+          hatshape <- as.numeric(parameters[2])
+          anova.df[i+3,] <- c(tCVM-u,"CVM",beta,sigma,xi,n,alpha,dif,hatscale,hatshape)
+          print(paste(i+3, " of ", N, "  (CVM)"))
+          
+          # Change the index
+          i <- i+4
+          
+        }
+      }
+    }
+  }
+}
+
+```
+
+The results are stored in the file named *anova.csv*.
+
+## Analysis of the differences among methods
+
+```{r}
+# Read the data
+df <- read.csv("anova.csv")
+```
+
+### GENERAL ASPECTS
+
+#### Threshold detection // Sample size
+
+```{r, warning=FALSE}
+df$n <- as.factor(df$n)
+
+ggplot(df, aes(x = difference, fill = n)) +
+  geom_density(alpha = 0.3) + 
+  xlim(-3, 3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Density")
+
+```
+
+```{r}
+dif_short <- df$difference[df$n == "2000"]
+dif_long <- df$difference[df$n == "10000"]
+mean(dif_long)
+mean(dif_short)
+mean(dif_long) - mean(dif_short)
+wilcox.test(dif_long, dif_short)
+```
+
+#### Threshold detection // Sigma
+
+```{r, warning=FALSE}
+df$sigma <- as.factor(df$sigma)
+
+ggplot2::ggplot(df, aes(x=difference, fill=sigma)) +
+  geom_density(alpha=0.3) + xlim(-3,3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Density")
+```
+
+#### Threshold detection // Xi
+
+```{r, warning=FALSE}
+df$xi <- as.factor(df$xi)
+
+ggplot2::ggplot(df, aes(x=difference, fill=xi)) +
+  geom_density(alpha=0.3) + xlim(-3,3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Density")
+```
+
+#### Threshold detection // Beta
+
+```{r, warning=FALSE}
+df$beta <- as.factor(df$beta)
+
+ggplot2::ggplot(df, aes(x=difference, fill=beta)) +
+  geom_density(alpha=0.3) + xlim(-3,3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Density")
+```
+
+#### Threshold detection // Alpha
+
+```{r, warning=FALSE}
+df$alpha <- as.factor(df$alpha)
+
+ggplot2::ggplot(df, aes(x=difference, fill=alpha)) +
+  geom_density(alpha=0.3) + xlim(-3,3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Density")
+```
+
+### DIFFERENCE // METHOD
+
+```{r, warning=FALSE, message=FALSE}
+# Convert to factor
+df$method <- as.factor(df$method)
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=difference, fill=method)) +
+  geom_density(alpha=0.3) + xlim(-3,2) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Density")
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=difference, fill=method)) +
+  geom_boxplot() + xlim(-3,5) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab(expression(Difference~(hat(u) - u))) + 
+  ylab("Method") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+Check normality of the difference by groups:
+
+```{r}
+dif_res <- df$difference[df$method == "Residuals"]
+dif_lan <- df$difference[df$method == "Langousis"]
+dif_and <- df$difference[df$method == "AD"]
+dif_cvm <- df$difference[df$method == "CVM"]
+shapiro.test(dif_res)$p.value
+shapiro.test(dif_lan)$p.value
+shapiro.test(dif_and)$p.value
+shapiro.test(dif_cvm)$p.value
+```
+
+Clearly not normal. We use Kruskal-Wallis test as an alternative to ANOVA for non Gaussian data:
+
+```{r}
+kruskal.test(difference ~ method, data=df)$p.value
+```
+
+Clearly there are differences among groups. Wilcoxon-Mann-Whitney tests:
+
+```{r}
+wilcox.test(dif_res, dif_lan)$p.value # DIFFERENT
+wilcox.test(dif_res, dif_and)$p.value # ?
+wilcox.test(dif_res, dif_cvm)$p.value # EQUAL
+wilcox.test(dif_lan, dif_and)$p.value # DIFFERENT
+wilcox.test(dif_lan, dif_cvm)$p.value # DIFFERENT
+wilcox.test(dif_and, dif_cvm)$p.value # DIFFERENT
+```
+
+### TIME // METHOD
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=time, fill=method)) +
+  geom_density(alpha=0.3) + xlim(0,18) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab("Time (s)") + 
+  ylab("Density")
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=time, fill=method)) +
+  geom_boxplot() + xlim(0,18) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab("Time (s)") + 
+  ylab("Method")
+```
+
+```{r}
+time_res <- df$time[df$method == "Residuals"]
+time_lan <- df$time[df$method == "Langousis"]
+time_and <- df$time[df$method == "AD"]
+time_cvm <- df$time[df$method == "CVM"]
+shapiro.test(time_res)$p.value
+shapiro.test(time_lan)$p.value
+shapiro.test(time_and)$p.value
+shapiro.test(time_cvm)$p.value
+```
+
+Not normal.
+
+```{r}
+kruskal.test(time ~ method, data=df)$p.value
+```
+
+Significant differences.
+
+```{r}
+wilcox.test(time_res, time_lan)$p.value # DIFFERENT
+wilcox.test(time_res, time_and)$p.value # DIFFERENT
+wilcox.test(time_res, time_cvm)$p.value # DIFFERENT
+wilcox.test(time_lan, time_and)$p.value # ?
+wilcox.test(time_lan, time_cvm)$p.value # ?
+wilcox.test(time_and, time_cvm)$p.value # DIFFERENT
+```
+
+### TIME // SAMPLE SIZE
+
+```{r}
+time_short <- df$time[df$n == "2000"]
+time_long <- df$time[df$n == "10000"]
+mean(time_long)
+mean(time_short)
+mean(time_long) - mean(time_short)
+wilcox.test(time_long, time_short)
+```
+
+### PARAMETER ESTIMATION
+
+#### Sigma
+
+```{r}
+df <- read.csv("anova.csv")
+df$rel_sigma <- (df$hatsigma - df$sigma) / df$sigma
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=rel_sigma, fill=method)) +
+  geom_density(alpha=0.3) + xlim(-3,13) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab("Relative error when estimating sigma") + 
+  ylab("Density")
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=rel_sigma, fill=method)) +
+  geom_boxplot() + xlim(-3,18) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab("Relative error when estimating sigma") + 
+  ylab("Method") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+#### Xi
+
+```{r}
+df$error_xi <- df$hatxi - df$xi
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=error_xi, fill=method)) +
+  geom_density(alpha=0.3) + xlim(-3,3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab("Absolute error when estimating xi") + 
+  ylab("Method")
+```
+
+```{r, warning=FALSE}
+ggplot2::ggplot(df, aes(x=error_xi, fill=method)) +
+  geom_boxplot() + xlim(-3,3) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() + 
+  xlab("Absolute error when estimating xi") + 
+  ylab("Method") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
